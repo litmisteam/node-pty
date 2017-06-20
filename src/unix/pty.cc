@@ -1,6 +1,6 @@
 /**
+ * pty.js
  * Copyright (c) 2012-2015, Christopher Jeffrey (MIT License)
- * Copyright (c) 2017, Daniel Imms (MIT License)
  *
  * pty.cc:
  *   This file is responsible for starting processes
@@ -139,13 +139,13 @@ pty_after_close(uv_handle_t *);
 
 /**
  * PtyFork
- * pty.fork(file, args, env, cwd, cols, rows, uid, gid, utf8, onexit)
+ * pty.fork(file, args, env, cwd, cols, rows, uid, gid, onexit)
  */
 
 NAN_METHOD(PtyFork) {
   Nan::HandleScope scope;
 
-  if (info.Length() != 10
+  if (info.Length() != 9
       || !info[0]->IsString() // file
       || !info[1]->IsArray() // args
       || !info[2]->IsArray() // env
@@ -154,15 +154,11 @@ NAN_METHOD(PtyFork) {
       || !info[5]->IsNumber() // rows
       || !info[6]->IsNumber() // uid
       || !info[7]->IsNumber() // gid
-      || !info[8]->IsBoolean() // utf8
-      || !info[9]->IsFunction() // onexit
+      || !info[8]->IsFunction() // onexit
   ) {
     return Nan::ThrowError(
-      "Usage: pty.fork(file, args, env, cwd, cols, rows, uid, gid, utf8, onexit)");
+      "Usage: pty.fork(file, args, env, cwd, cols, rows, uid, gid, onexit)");
   }
-
-  // Make sure the process still listens to SIGINT
-  signal(SIGINT, SIG_DFL);
 
   // file
   String::Utf8Value file(info[0]->ToString());
@@ -202,53 +198,14 @@ NAN_METHOD(PtyFork) {
   winp.ws_xpixel = 0;
   winp.ws_ypixel = 0;
 
-  // termios
-  struct termios t = termios();
-  struct termios *term = &t;
-  term->c_iflag = ICRNL | IXON | IXANY | IMAXBEL | BRKINT;
-  if (info[8]->ToBoolean()->Value()) {
-#if defined(IUTF8)
-    term->c_iflag |= IUTF8;
-#else
-    term->c_iflag |= UTF8;
-#endif
-  }
-  term->c_oflag = OPOST | ONLCR;
-  term->c_cflag = CREAD | CS8 | HUPCL;
-  term->c_lflag = ICANON | ISIG | IEXTEN | ECHO | ECHOE | ECHOK | ECHOKE | ECHOCTL;
-
-  term->c_cc[VEOF] = 4;
-  term->c_cc[VEOL] = -1;
-  term->c_cc[VEOL2] = -1;
-  term->c_cc[VERASE] = 0x7f;
-  term->c_cc[VWERASE] = 23;
-  term->c_cc[VKILL] = 21;
-  term->c_cc[VREPRINT] = 18;
-  term->c_cc[VINTR] = 3;
-  term->c_cc[VQUIT] = 0x1c;
-  term->c_cc[VSUSP] = 26;
-  term->c_cc[VSTART] = 17;
-  term->c_cc[VSTOP] = 19;
-  term->c_cc[VLNEXT] = 22;
-  term->c_cc[VDISCARD] = 15;
-  term->c_cc[VMIN] = 1;
-  term->c_cc[VTIME] = 0;
-
-  #if (__APPLE__)
-  term->c_cc[VDSUSP] = 25;
-  term->c_cc[VSTATUS] = 20;
-  #endif
-
-  cfsetispeed(term, B38400);
-  cfsetospeed(term, B38400);
-
   // uid / gid
   int uid = info[6]->IntegerValue();
   int gid = info[7]->IntegerValue();
 
   // fork the pty
   int master = -1;
-  pid_t pid = pty_forkpty(&master, nullptr, term, &winp);
+  char name[40];
+  pid_t pid = pty_forkpty(&master, name, NULL, &winp);
 
   if (pid) {
     for (i = 0; i < argl; i++) free(argv[i]);
@@ -262,12 +219,7 @@ NAN_METHOD(PtyFork) {
     case -1:
       return Nan::ThrowError("forkpty(3) failed.");
     case 0:
-      if (strlen(cwd)) {
-        if (chdir(cwd) == -1) {
-          perror("chdir(2) failed.");
-          _exit(1);
-        }
-      }
+      if (strlen(cwd)) chdir(cwd);
 
       if (uid != -1 && gid != -1) {
         if (setgid(gid) == -1) {
@@ -298,12 +250,12 @@ NAN_METHOD(PtyFork) {
         Nan::New<Number>(pid));
       Nan::Set(obj,
         Nan::New<String>("pty").ToLocalChecked(),
-        Nan::New<String>(ptsname(master)).ToLocalChecked());
+        Nan::New<String>(name).ToLocalChecked());
 
       pty_baton *baton = new pty_baton();
       baton->exit_code = 0;
       baton->signal_code = 0;
-      baton->cb.Reset(Local<Function>::Cast(info[9]));
+      baton->cb.Reset(Local<Function>::Cast(info[8]));
       baton->pid = pid;
       baton->async.data = baton;
 
@@ -340,7 +292,8 @@ NAN_METHOD(PtyOpen) {
 
   // pty
   int master, slave;
-  int ret = pty_openpty(&master, &slave, nullptr, NULL, &winp);
+  char name[40];
+  int ret = pty_openpty(&master, &slave, name, NULL, &winp);
 
   if (ret == -1) {
     return Nan::ThrowError("openpty(3) failed.");
@@ -363,7 +316,7 @@ NAN_METHOD(PtyOpen) {
     Nan::New<Number>(slave));
   Nan::Set(obj,
     Nan::New<String>("pty").ToLocalChecked(),
-    Nan::New<String>(ptsname(master)).ToLocalChecked());
+    Nan::New<String>(name).ToLocalChecked());
 
   return info.GetReturnValue().Set(obj);
 }
